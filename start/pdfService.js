@@ -1,21 +1,27 @@
+// start/pdfService.js
+'use strict';
+
+require('dotenv').config(); // ✅ garante process.env antes de qualquer coisa
+
 const MetricRAGChatService = use('App/Services/LangChain/MetricRAGChatService');
 
-// Instância global do PdfQAService
-const qaService = new MetricRAGChatService();
+const chatService = new MetricRAGChatService();
 
 async function initializeService() {
   try {
-    console.log('Inicializando o PdfQAService globalmente...');
-    await qaService.ensureInitialized(); // Garante que o serviço esteja inicializado
-    console.log('PdfQAService inicializado globalmente.');
+    if (!process.env.DB_CONNECTION_STRING) {
+      throw new Error('DB_CONNECTION_STRING não está definido. Verifique o .env');
+    }
+
+    const defaultAlg = (process.env.DEFAULT_ALGORITHM || process.env.DEFAULT_MODEL || 'llama2').trim();
+    await chatService.ensureInitializedForAlgorithm(defaultAlg);
+
+    console.log('✅ MetricRAGChatService inicializado para:', defaultAlg);
   } catch (error) {
-    console.error('Erro ao inicializar o PdfQAService global:', error.message || error);
-    // Opcional: Encerra a aplicação caso a inicialização seja crítica
+    console.error('Erro ao inicializar MetricRAGChatService global:', error.message || error);
     process.exit(1);
   }
 }
 
-// Inicializa o serviço
 initializeService();
-
-module.exports = qaService; // Exporta a instância para uso em outros módulos
+module.exports = chatService;

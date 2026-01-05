@@ -1,11 +1,10 @@
 'use strict';
 
 const MetricRAGService = use('App/Services/LangChain/MetricRAGService');
+const WebRAGService = use('App/Services/LangChain/WebRAGService');
 const path = use('path');
 const fs = use('fs');
 
-// ✅ WebRAG (igual evaluateMetrics.js)
-const WebRAGService = use('App/Services/LangChain/WebRAGService'); // ajuste o path se estiver em outro lugar
 
 // OpenAI client
 const OpenAI = use('openai');

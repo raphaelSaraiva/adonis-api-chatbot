@@ -59,7 +59,8 @@ class QuestionController {
 
     try {
       console.log('[QuestionController] ensureInitialized...');
-      await metricRAGChatService.ensureInitialized();
+      const algorithmName = String(modelName || 'llama2').trim();
+      await metricRAGChatService.ensureInitializedForAlgorithm(algorithmName);
       console.log('[QuestionController] ensureInitialized OK');
 
       let response_rag = null;
