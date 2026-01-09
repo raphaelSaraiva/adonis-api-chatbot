@@ -26,10 +26,4 @@ Route.post('/feedbacks', 'FeedbackController.store') // Salva feedbacks
 // Rota para testes
 Route.post('/llm-tests', 'LLMTestingController.runTests');
 
-Route.get('/online', ({ response }) => {
-    return response.status(200).json({
-        status: 'ok',
-        service: 'adonis-api-chatbot',
-        timestamp: new Date().toISOString(),
-    });
-});
+Route.get('/health', 'HealthController.index').middleware(['health'])
