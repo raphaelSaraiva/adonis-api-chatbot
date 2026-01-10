@@ -2,11 +2,10 @@
 
 const MetricRAGService = use('App/Services/LangChain/MetricRAGService');
 const WebRAGService = use('App/Services/LangChain/WebRAGService');
+
 const path = use('path');
 const fs = use('fs');
 
-
-// OpenAI client
 const OpenAI = use('openai');
 
 // fetch global (Node 18+) ou fallback para node-fetch
@@ -28,12 +27,12 @@ if (typeof _fetch !== 'function') {
 }
 
 // ===================================================================
-// ✅ ENV helper (compatível com Adonis e com execução fora do bootstrap)
+// ✅ ENV helper
 // ===================================================================
 
 function envGet(key, fallback = '') {
   try {
-    const Env = use('Env'); // ⚠️ não coloque no topo do arquivo
+    const Env = use('Env');
     const v = Env.get(key);
     return (v !== undefined && v !== null ? String(v) : String(fallback)).trim();
   } catch (e) {
@@ -57,7 +56,9 @@ function envFloat(key, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// ---------- OpenAI (lazy init) ---------- //
+// ===================================================================
+// ---------- OpenAI (lazy init) ----------
+// ===================================================================
 
 let _openaiClient = null;
 let _openaiKeyCached = null;
@@ -79,7 +80,9 @@ function getOpenAIClient() {
   return _openaiClient;
 }
 
-// ---------- Hosts ---------- //
+// ===================================================================
+// ---------- Hosts ----------
+// ===================================================================
 
 function getOllamaHost() {
   return envGet('OLLAMA_HOST', 'http://127.0.0.1:11434');
@@ -89,7 +92,7 @@ function getLMStudioHost() {
 }
 
 // ===================================================================
-// ---------- Helpers de system prompt ----------
+// ---------- System prompt loader ----------
 // ===================================================================
 
 const PROMPTS_DIR = path.join(process.cwd(), 'prompts');
@@ -97,27 +100,20 @@ const systemPromptCache = {};
 
 function loadSystemPromptSync(lang = 'pt', useRag = true) {
   const key = `${lang}_${useRag ? 'rag' : 'norag'}`;
-  if (systemPromptCache[key]) {
-    console.log('[SYSTEM PROMPT] cache hit para', key);
-    return systemPromptCache[key];
-  }
+  if (systemPromptCache[key]) return systemPromptCache[key];
 
   const fileName = `system_${lang}_${useRag ? 'rag' : 'norag'}.txt`;
   const fullPath = path.join(PROMPTS_DIR, fileName);
 
-  console.log('[SYSTEM PROMPT] tentando carregar', fullPath);
   try {
     if (fs.existsSync(fullPath)) {
       const txt = fs.readFileSync(fullPath, 'utf8');
       systemPromptCache[key] = txt.trim();
-      console.log('[SYSTEM PROMPT] carregado com sucesso', fileName);
       return systemPromptCache[key];
     }
   } catch (e) {
-    console.error('[SYSTEM PROMPT] erro ao carregar', fileName, e.message);
+    console.error('[SYSTEM PROMPT] erro:', e.message);
   }
-
-  console.warn('[SYSTEM PROMPT] usando fallback para', key);
 
   const fallbackRag =
     'You are a helpful assistant that answers questions about software metrics for blockchain systems. ' +
@@ -132,15 +128,10 @@ function loadSystemPromptSync(lang = 'pt', useRag = true) {
 }
 
 // ===================================================================
-// ---------- Tradução (Google translate endpoint) ----------
+// ---------- Tradução ----------
 // ===================================================================
 
 async function translateText(text, targetLanguage) {
-  console.log('[TRANSLATE] chamado com:', {
-    textSnippet: (text || '').slice(0, 80),
-    targetLanguage,
-  });
-
   if (!text || typeof text !== 'string') return text;
   if (!targetLanguage || typeof targetLanguage !== 'string') return text;
   if (typeof _fetch !== 'function') return text;
@@ -158,17 +149,16 @@ async function translateText(text, targetLanguage) {
     const translated = (data[0] || []).map((chunk) => chunk[0]).join('');
     return translated || text;
   } catch (e) {
-    console.error('[TRANSLATE] erro ao traduzir:', e.message);
+    console.error('[TRANSLATE] erro:', e.message);
     return text;
   }
 }
 
 // ===================================================================
-// ---------- Seleção de provider ----------
+// ---------- Provider selection ----------
 // ===================================================================
 
 function resolveProvider(modelName) {
-  console.log('[LLM] Resolving provider for model:', modelName);
   const lower = (modelName || '').toLowerCase();
 
   if (lower === 'openai' || lower.startsWith('openai-')) return 'openai';
@@ -180,12 +170,8 @@ function resolveProvider(modelName) {
     lower.startsWith('llama-2') ||
     lower.startsWith('llama3') ||
     lower.startsWith('llama-3')
-  ) {
-    console.log('[LLM] Resolved provider (heuristic): OLLAMA');
-    return 'ollama';
-  }
+  ) return 'ollama';
 
-  console.log('[LLM] Resolved provider (default): lmstudio');
   return 'lmstudio';
 }
 
@@ -202,28 +188,23 @@ function resolveOpenAIModel(modelName) {
 }
 
 // ===================================================================
-// ---------- Chamada unificada de LLM ----------
+// ---------- Unified LLM call ----------
 // ===================================================================
 
-async function generateWithLLM(systemPrompt, userPrompt, modelName) {
+async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
   const chosenModel = modelName;
   if (!chosenModel) return null;
 
   const provider = resolveProvider(chosenModel);
-  console.log(`[LLM] Provider=${provider} | model=${chosenModel}`);
+  const temperature = typeof opts.temperature === 'number' ? opts.temperature : 0.2;
 
   // OPENAI
   if (provider === 'openai') {
     const client = getOpenAIClient();
     const key = getOpenAIKey();
-
-    if (!client || !key) {
-      console.error('[OPENAI] OPENAI_API_KEY não definido ou cliente não inicializado.');
-      return null;
-    }
+    if (!client || !key) return null;
 
     const realModel = resolveOpenAIModel(chosenModel);
-    console.log('[OPENAI] model resolvido:', realModel);
 
     try {
       const completion = await client.chat.completions.create({
@@ -232,11 +213,10 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName) {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.2,
+        temperature,
       });
 
-      const content = completion.choices?.[0]?.message?.content || '';
-      return content.trim();
+      return (completion.choices?.[0]?.message?.content || '').trim();
     } catch (e) {
       console.error('[OPENAI] erro:', e.message);
       return null;
@@ -257,7 +237,7 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName) {
           model: chosenModel,
           prompt: fullPrompt,
           stream: false,
-          options: { temperature: 0.2 },
+          options: { temperature },
         }),
       });
 
@@ -284,7 +264,7 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName) {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.2,
+        temperature,
       }),
     });
 
@@ -298,7 +278,264 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName) {
 }
 
 // ===================================================================
-// ✅ Helpers docs: normalize + rerank + combine local/web
+// ✅ Contract (sem referências) + limpeza anti-id
+// ===================================================================
+
+function buildAnswerContract(answerLanguage, { isRag = false } = {}) {
+  const lang = (answerLanguage || 'pt').toLowerCase();
+
+  const basePt = [
+    'Siga EXATAMENTE a estrutura abaixo (sem adicionar seções extras):',
+    '1. Definição da métrica',
+    '2. Como a métrica é medida',
+    '3. Principais fatores que influenciam a métrica',
+    '4. Interpretação prática dos valores',
+    '',
+    'Regras:',
+    '- Use parágrafos curtos e objetivos.',
+    '- Não inclua introduções longas nem conclusões fora das 4 seções.',
+    '- NÃO cite IDs/códigos internos (ex.: "t12") em nenhuma parte da resposta.',
+  ];
+
+  const baseEn = [
+    'Follow EXACTLY the structure below (do not add extra sections):',
+    '1. Metric definition',
+    '2. How the metric is measured',
+    '3. Main factors influencing the metric',
+    '4. Practical interpretation of values',
+    '',
+    'Rules:',
+    '- Use short, objective paragraphs.',
+    '- Do not add long intros or conclusions outside the 4 sections.',
+    '- DO NOT mention internal IDs/codes (e.g., "t12") anywhere.',
+  ];
+
+  if (lang === 'pt') {
+    if (isRag) {
+      basePt.push(
+        '- Use APENAS o que estiver presente no CONTEXTO fornecido.',
+        '- Se o contexto não trouxer informação suficiente para alguma seção, escreva: "Informação não disponível" (na própria seção).',
+        '- Não complete com conhecimento externo.'
+      );
+    } else {
+      basePt.push(
+        '- Não inclua detalhes avançados que o usuário não pediu explicitamente.',
+        '- Se não tiver certeza, diga que não tem certeza.'
+      );
+    }
+    return basePt.join('\n');
+  }
+
+  if (isRag) {
+    baseEn.push(
+      '- Use ONLY what is present in the provided CONTEXT.',
+      '- If the context is insufficient for a section, write: "Information not available" inside that section.',
+      '- Do not fill gaps with external knowledge.'
+    );
+  } else {
+    baseEn.push(
+      '- Do not add advanced details unless explicitly asked by the user.',
+      '- If you are not sure, say you are not sure.'
+    );
+  }
+  return baseEn.join('\n');
+}
+
+function buildAnalysisContract(answerLanguage, { isRag = false } = {}) {
+  const lang = (answerLanguage || 'pt').toLowerCase();
+
+  if (lang === 'pt') {
+    const lines = [
+      'Responda DIRETAMENTE à pergunta do usuário.',
+      'Estrutura obrigatória (sem adicionar seções extras):',
+      '1. Condições de carga (workload) em que o fenômeno piora',
+      '2. Evidência/efeito observado nas medições (o que muda na latência)',
+      '3. Interpretação (por que isso acontece, baseado no que foi fornecido)',
+      '',
+      'Regras:',
+      '- NÃO faça definição geral da métrica (evite “Latência é…”), a menos que a pergunta peça.',
+      '- Use parágrafos curtos e objetivos.',
+      '- NÃO cite IDs/códigos internos (ex.: "t12").',
+    ];
+
+    if (isRag) {
+      lines.push(
+        '- Use APENAS o que estiver presente no CONTEXTO fornecido.',
+        '- Se o contexto não trouxer informação suficiente, diga explicitamente: "Informação não disponível no contexto".'
+      );
+    } else {
+      lines.push(
+        '- Não invente detalhes específicos do artigo se eles não foram fornecidos.',
+        '- Se não tiver certeza, diga que não tem certeza.'
+      );
+    }
+
+    return lines.join('\n');
+  }
+
+  const lines = [
+    'Answer the user DIRECTLY.',
+    'Required structure (do not add extra sections):',
+    '1. Workload conditions where the phenomenon becomes worse',
+    '2. Evidence/effect observed in measurements (how latency changes)',
+    '3. Interpretation (why it happens, based on provided info)',
+    '',
+    'Rules:',
+    '- Do NOT provide a generic metric definition (avoid “Latency is…”), unless asked.',
+    '- Use short, objective paragraphs.',
+    '- Do NOT mention internal IDs/codes (e.g., "t12").',
+  ];
+
+  if (isRag) {
+    lines.push(
+      '- Use ONLY what is present in the provided CONTEXT.',
+      '- If the context is insufficient, say: "Information not available in the context".'
+    );
+  } else {
+    lines.push(
+      '- Do not invent paper-specific details if they were not provided.',
+      '- If you are not sure, say you are not sure.'
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function stripInternalCodesFromAnswer(text) {
+  let t = String(text || '');
+
+  t = t.replace(/metric\s*id\s*[:=]\s*\\?["']?[a-z]\d{1,6}\\?["']?/gi, '');
+  t = t.replace(/metricId\s*[:=]\s*\\?["']?[a-z]\d{1,6}\\?["']?/g, '');
+
+  t = t.replace(/[\(\[\{]\s*[a-z]\d{1,6}\s*[\)\]\}]/gi, '');
+
+  t = t.replace(/\b([a-z]\d{1,6})\b/gi, (m) => {
+    if (/^p\d+$/i.test(m)) return m;
+    return '';
+  });
+
+  t = t.replace(/\s{2,}/g, ' ').replace(/\s+\n/g, '\n').trim();
+  return t;
+}
+
+// ===================================================================
+// ✅ Guard via LLM (opcional) — mantido
+// ===================================================================
+
+async function llmGuardMetricQuestion({ userText, metric, modelName, answerLanguage = 'pt' }) {
+  const lang = (answerLanguage || 'pt').toLowerCase();
+  const outLang = lang === 'pt' ? 'Portuguese' : 'English';
+
+  const system =
+    'You are a strict input validator for a Metrics Q&A system. ' +
+    'Return ONLY valid JSON. No markdown. No extra text.';
+
+  const user =
+    `User message:\n"""${String(userText || '').trim()}"""\n\n` +
+    `Metric context (if any): "${String(metric || '').trim()}"\n\n` +
+    'Return JSON with exactly these keys:\n' +
+    '{ "is_metric_question": boolean, "reason": string, "suggested_question": string }\n' +
+    `The "suggested_question" must be in ${outLang}.\n`;
+
+  const raw = await generateWithLLM(system, user, modelName, { temperature: 0.0 });
+  if (!raw) return { is_metric_question: true, reason: 'validator_failed', suggested_question: '' };
+
+  const txt = String(raw).trim();
+  const start = txt.indexOf('{');
+  const end = txt.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return { is_metric_question: true, reason: 'invalid_validator_output', suggested_question: '' };
+  }
+
+  try {
+    const obj = JSON.parse(txt.slice(start, end + 1));
+    return {
+      is_metric_question: Boolean(obj.is_metric_question),
+      reason: typeof obj.reason === 'string' ? obj.reason : '',
+      suggested_question: typeof obj.suggested_question === 'string' ? obj.suggested_question : '',
+    };
+  } catch {
+    return { is_metric_question: true, reason: 'validator_parse_failed', suggested_question: '' };
+  }
+}
+
+// ===================================================================
+// ✅ NEW: Classificador de tipo de pergunta (métrica vs análise)
+// ===================================================================
+
+async function llmClassifyQuestionType({ userText, metric, modelName, answerLanguage = 'pt' }) {
+  const system =
+    'You are a strict classifier for a Metrics Q&A system. ' +
+    'Return ONLY valid JSON. No markdown. No extra text.';
+
+  const user =
+    `User message:\n"""${String(userText || '').trim()}"""\n\n` +
+    `Metric context (if any): "${String(metric || '').trim()}"\n\n` +
+    'Return JSON with exactly these keys:\n' +
+    '{ "question_type": "metric_contract" | "analysis_contract", "reason": string }\n' +
+    'Choose "metric_contract" when the user is asking for definition/measurement/factors/interpretation of the metric itself.\n' +
+    'Choose "analysis_contract" when the user is asking about an experiment, workload conditions, paper results, comparative behavior, or "according to the article" style questions.\n';
+
+  const raw = await generateWithLLM(system, user, modelName, { temperature: 0.0 });
+  if (!raw) return { question_type: 'metric_contract', reason: 'classifier_failed' };
+
+  const txt = String(raw).trim();
+  const start = txt.indexOf('{');
+  const end = txt.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return { question_type: 'metric_contract', reason: 'invalid_classifier_output' };
+  }
+
+  try {
+    const obj = JSON.parse(txt.slice(start, end + 1));
+    const qt = obj?.question_type === 'analysis_contract' ? 'analysis_contract' : 'metric_contract';
+    return { question_type: qt, reason: typeof obj.reason === 'string' ? obj.reason : '' };
+  } catch {
+    return { question_type: 'metric_contract', reason: 'classifier_parse_failed' };
+  }
+}
+
+// ===================================================================
+// ✅ Helpers: normalize metric + history
+// ===================================================================
+
+function normalizeMetric(opts) {
+  const metricId = String(opts?.metricId || '').trim();
+  const metricName = String(opts?.metricName || '').trim();
+  const legacyMetric = String(opts?.metric || '').trim();
+  const metric = metricName || legacyMetric || metricId || 'Latency';
+  return { metric, metricId, metricName };
+}
+
+function clampText(s, max = 900) {
+  const t = String(s || '');
+  return t.length > max ? t.slice(0, max) + '…' : t;
+}
+
+function formatHistoryForPrompt(history, maxTurns = 6) {
+  if (!Array.isArray(history) || history.length === 0) return '';
+
+  const last = history.slice(-maxTurns);
+  const blocks = last
+    .map((h, i) => {
+      const q = clampText(h?.question);
+      const a = clampText(h?.chosenText || h?.response || h?.answer);
+      if (!q && !a) return null;
+
+      return [
+        `# Turn ${i + 1}`,
+        q ? `User: ${q}` : null,
+        a ? `Assistant: ${a}` : null,
+      ].filter(Boolean).join('\n');
+    })
+    .filter(Boolean);
+
+  if (!blocks.length) return '';
+  return `\n\n=== RECENT CHAT HISTORY ===\n${blocks.join('\n\n')}\n=== END CHAT HISTORY ===\n`;
+}
+
+// ===================================================================
+// ✅ Docs helpers (normalize + rerank)
 // ===================================================================
 
 function normalizeDocs(docs, origin = 'local') {
@@ -341,18 +578,12 @@ function rerankDocs(docs, question, topK) {
     const source = String(d.source || '').toLowerCase();
 
     let score = 0;
-
-    // keywords do enunciado
     for (const kw of qkw) if (kw && text.includes(kw)) score += 3;
 
-    // similaridade local ajuda
     const sim = (typeof d.similarity === 'number') ? d.similarity : Number(d.similarity || 0);
     if (!Number.isNaN(sim) && sim > 0) score += sim * 2;
 
-    // docs web ganham leve bônus
     if (d.origin === 'web' || source.startsWith('http://') || source.startsWith('https://')) score += 1.0;
-
-    // penaliza muito longos
     if (text.length > 8000) score -= 1.5;
 
     return { d, score };
@@ -360,51 +591,11 @@ function rerankDocs(docs, question, topK) {
 
   scored.sort((a, b) => b.score - a.score);
   const picked = scored.filter(x => x.score > 0).slice(0, Math.max(3, topK)).map(x => x.d);
-
   return picked.length ? picked : scored.slice(0, Math.max(3, topK)).map(x => x.d);
 }
 
 // ===================================================================
-// ✅ Helpers: normalizar métrica e formatar histórico para o prompt
-// ===================================================================
-
-function normalizeMetric(opts) {
-  const metricId = String(opts?.metricId || '').trim();
-  const metricName = String(opts?.metricName || '').trim();
-  const legacyMetric = String(opts?.metric || '').trim();
-  const metric = metricName || legacyMetric || metricId || 'Latency';
-  return { metric, metricId, metricName };
-}
-
-function clampText(s, max = 900) {
-  const t = String(s || '');
-  return t.length > max ? t.slice(0, max) + '…' : t;
-}
-
-function formatHistoryForPrompt(history, maxTurns = 6) {
-  if (!Array.isArray(history) || history.length === 0) return '';
-
-  const last = history.slice(-maxTurns);
-  const blocks = last
-    .map((h, i) => {
-      const q = clampText(h?.question);
-      const a = clampText(h?.chosenText || h?.response);
-      if (!q && !a) return null;
-
-      return [
-        `# Turn ${i + 1}`,
-        q ? `User: ${q}` : null,
-        a ? `Assistant: ${a}` : null,
-      ].filter(Boolean).join('\n');
-    })
-    .filter(Boolean);
-
-  if (!blocks.length) return '';
-  return `\n\n=== RECENT CHAT HISTORY ===\n${blocks.join('\n\n')}\n=== END CHAT HISTORY ===\n`;
-}
-
-// ===================================================================
-// Service principal (RAG + NO-RAG + WEBRAG)
+// Service principal
 // ===================================================================
 
 class MetricRAGChatService {
@@ -415,13 +606,11 @@ class MetricRAGChatService {
     this.retrieveTopK = envInt('RETRIEVE_TOP_K', 6);
     this.minSimilarity = envFloat('MIN_LOCAL_SIMILARITY', 0.0);
 
-    // ✅ WEB RAG flags
     this.webRagEnabled = envBool('WEB_RAG_ENABLED', false);
     this.webRagMaxResults = envInt('WEB_RAG_MAX_RESULTS', 10);
     this.webRagEngine = envGet('WEB_RAG_ENGINE', 'multi');
-    this.webRagMinLocalSim = envFloat('WEB_RAG_MIN_LOCAL_SIM', 0.75); // só chama web se bestSim < isso
+    this.webRagMinLocalSim = envFloat('WEB_RAG_MIN_LOCAL_SIM', 0.75);
 
-    // ✅ instancia WebRAG (igual evaluateMetrics)
     this.webRag = new WebRAGService({
       enabled: this.webRagEnabled,
       fetchImpl: _fetch,
@@ -435,27 +624,15 @@ class MetricRAGChatService {
       arxivEndpoint: envGet('ARXIV_ENDPOINT', ''),
       serperApiKey: envGet('SERPER_API_KEY', ''),
     });
-
-    console.log('[MetricRAGChatService] construído com config:', {
-      answerLanguage: this.answerLanguage,
-      retrieveTopK: this.retrieveTopK,
-      minSimilarity: this.minSimilarity,
-      webRagEnabled: this.webRagEnabled,
-      webRagMaxResults: this.webRagMaxResults,
-      webRagEngine: this.webRagEngine,
-      webRagMinLocalSim: this.webRagMinLocalSim,
-    });
   }
 
   async ensureInitializedForAlgorithm(algorithmName) {
     if (!algorithmName) throw new Error('algorithmName é obrigatório');
 
     if (!this.ragByAlgorithm[algorithmName]) {
-      console.log('[MetricRAGChatService] criando novo MetricRAGService para', algorithmName);
       const rag = new MetricRAGService(algorithmName);
       await rag.connect();
       this.ragByAlgorithm[algorithmName] = rag;
-      console.log(`[MetricRAGChatService] RAG inicializado para "${algorithmName}"`);
     }
   }
 
@@ -496,20 +673,52 @@ class MetricRAGChatService {
     const langStr = this.answerLanguage === 'pt' ? 'Portuguese' : 'English';
     const historyBlock = formatHistoryForPrompt(history, 6);
 
+    // ✅ Guard (LLM) — opcional
+    const guard = await llmGuardMetricQuestion({
+      userText: question,
+      metric,
+      modelName: algorithm,
+      answerLanguage: this.answerLanguage,
+    });
+
+    if (!guard.is_metric_question) {
+      return this.answerLanguage === 'pt'
+        ? '⚠️ A mensagem enviada não parece ser uma pergunta sobre métricas.'
+        : '⚠️ Your message does not look like a metrics question.';
+    }
+
+    // ✅ NEW: classifica o “tipo” da pergunta para NÃO forçar definição
+    const metricLabel = (metricName || metric || '').trim() || 'Latency';
+    const qType = await llmClassifyQuestionType({
+      userText: question,
+      metric: metricLabel,
+      modelName: algorithm,
+      answerLanguage: this.answerLanguage,
+    });
+    const useAnalysisContract = qType.question_type === 'analysis_contract';
+
     // 1) traduz pergunta para EN
     const qEn = await translateText(question, 'en');
 
     // 2) system prompt
     const systemPrompt = loadSystemPromptSync(this.answerLanguage, useRag);
 
-    // 3) NO-RAG
+    // ----------------------------------------------------------------
+    // NO-RAG
+    // ----------------------------------------------------------------
     if (!useRag) {
+      const contract = useAnalysisContract
+        ? buildAnalysisContract(this.answerLanguage, { isRag: false })
+        : buildAnswerContract(this.answerLanguage, { isRag: false });
+
       const userPrompt = [
-        `You are answering a question about the metric "${metric}".`,
-        metricId || metricName
-          ? `Metric details: metricId="${metricId || ''}" metricName="${metricName || ''}".`
+        `You are answering a question related to the metric "${metricLabel}".`,
+        '',
+        contract,
+        '',
+        historyBlock
+          ? ('NOTE: Chat history below is ONLY for disambiguation. Do NOT treat it as evidence.\n' + historyBlock.trimEnd())
           : '',
-        historyBlock ? historyBlock.trimEnd() : '',
         `Question (in English): ${qEn}`,
         '',
         `Answer in ${langStr}:`,
@@ -518,11 +727,14 @@ class MetricRAGChatService {
       const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm);
       if (!rawAnswer) return 'Não foi possível obter uma resposta da LLM no momento.';
 
-      if (this.answerLanguage === 'pt') return translateText(rawAnswer, 'pt');
-      return rawAnswer;
+      const cleaned = stripInternalCodesFromAnswer(rawAnswer);
+      if (this.answerLanguage === 'pt') return translateText(cleaned, 'pt');
+      return cleaned;
     }
 
-    // 4) RAG local
+    // ----------------------------------------------------------------
+    // RAG local
+    // ----------------------------------------------------------------
     await this.ensureInitializedForAlgorithm(algorithm);
     const rag = this.ragByAlgorithm[algorithm];
 
@@ -536,16 +748,10 @@ class MetricRAGChatService {
       ? Math.max(...localDocs.map(d => Number(d.similarity || 0)))
       : 0;
 
-    console.log('[MetricRAGChatService] local docs:', {
-      count: localDocs.length,
-      bestLocalSim,
-      minSimilarity: this.minSimilarity,
-    });
-
-    // 5) WEB RAG (complemento) — igual evaluateMetrics
+    // ----------------------------------------------------------------
+    // WebRAG opcional
+    // ----------------------------------------------------------------
     let webDocs = [];
-    let usedWeb = false;
-
     const shouldUseWeb =
       this.webRagEnabled &&
       typeof this.webRag?.query === 'function' &&
@@ -553,37 +759,29 @@ class MetricRAGChatService {
       (localDocs.length === 0 || bestLocalSim < this.webRagMinLocalSim);
 
     if (shouldUseWeb) {
-      console.log(
-        `[MetricRAGChatService] WEB_RAG_ENABLED=1 — chamando WebRAG (bestLocalSim=${bestLocalSim.toFixed(3)} < ${this.webRagMinLocalSim})`
-      );
-
       try {
         const webDocsRaw = await this.webRag.query(qEn, metric);
         webDocs = normalizeDocs(webDocsRaw, 'web');
-        usedWeb = webDocs.length > 0;
-
-        console.log('[MetricRAGChatService] web docs:', { count: webDocs.length, engine: this.webRagEngine });
       } catch (e) {
         console.warn('[MetricRAGChatService] WebRAG falhou:', e.message);
       }
-    } else {
-      console.log('[MetricRAGChatService] WebRAG não usado:', {
-        webRagEnabled: this.webRagEnabled,
-        localCount: localDocs.length,
-        bestLocalSim,
-        webRagMinLocalSim: this.webRagMinLocalSim,
-      });
     }
 
-    // 6) combina e rerankeia (local + web)
+    // ----------------------------------------------------------------
+    // combina e rerankeia
+    // ----------------------------------------------------------------
     let combined = [...localDocs, ...webDocs];
     if (!combined.length) {
-      return 'Não encontrei informação suficiente na base para responder a essa pergunta.';
+      return this.answerLanguage === 'pt'
+        ? 'Não encontrei informação suficiente na base para responder a essa pergunta.'
+        : 'I did not find enough information in the knowledge base to answer this question.';
     }
 
     combined = rerankDocs(combined, question, Math.max(6, this.retrieveTopK));
 
-    // 7) monta contexto final (com meta)
+    // ----------------------------------------------------------------
+    // contexto final (sem exigir citações)
+    // ----------------------------------------------------------------
     const context = combined
       .map((d, idx) => {
         const header = `[#${idx + 1} | origin=${d.origin} | source=${d.source || ''} | page=${d.page ?? ''}]`;
@@ -591,21 +789,17 @@ class MetricRAGChatService {
       })
       .join('\n\n---\n\n');
 
-    console.log('[MetricRAGChatService] Contexto montado:', {
-      docs: combined.length,
-      usedWeb,
-      contextLen: context.length,
-    });
+    // ----------------------------------------------------------------
+    // Prompt final RAG (sem referências, mas “strict context”)
+    // ----------------------------------------------------------------
+    const contract = useAnalysisContract
+      ? buildAnalysisContract(this.answerLanguage, { isRag: true })
+      : buildAnswerContract(this.answerLanguage, { isRag: true });
 
-    // 8) prompt final
     const userPrompt = [
-      `You are answering a question about the metric "${metric}".`,
-      metricId || metricName
-        ? `Metric details: metricId="${metricId || ''}" metricName="${metricName || ''}".`
-        : '',
-      'Use ONLY the information provided in the following context chunks.',
-      'If the context is insufficient, say that you are not sure.',
-      historyBlock ? historyBlock.trimEnd() : '',
+      `You are answering a question related to the metric "${metricLabel}".`,
+      '',
+      contract,
       '',
       'Context:',
       context,
@@ -618,8 +812,9 @@ class MetricRAGChatService {
     const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm);
     if (!rawAnswer) return 'Não foi possível obter uma resposta da LLM no momento.';
 
-    if (this.answerLanguage === 'pt') return translateText(rawAnswer, 'pt');
-    return rawAnswer;
+    const cleaned = stripInternalCodesFromAnswer(rawAnswer);
+    if (this.answerLanguage === 'pt') return translateText(cleaned, 'pt');
+    return cleaned;
   }
 }
 
