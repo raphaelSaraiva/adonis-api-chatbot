@@ -11,20 +11,19 @@ class QuestionController {
     const modelName = String(request.input('model') || 'llama2').trim();
     const mode = String(request.input('mode') || 'both').toLowerCase(); // both | rag | norag
 
-    // ✅ NOVO: recebe metricId/metricName (e mantém compat com o legado "metric")
+    // ✅ recebe metricId/metricName (compat com legado "metric")
     const metricId = String(request.input('metricId') || '').trim();
     const metricName = String(request.input('metricName') || '').trim();
     const legacyMetric = String(request.input('metric') || '').trim();
 
-    // ✅ regra final de métrica (prioriza metricName, depois legacyMetric, depois metricId, senão Latency)
+    // ✅ regra final de métrica
     const metric = metricName || legacyMetric || metricId || 'Latency';
 
-    // ✅ NOVO: histórico (pode vir como array ou string JSON)
+    // ✅ histórico (array ou string JSON)
     let history = request.input('history');
     if (history == null) history = request.input('chatHistory');
     if (history == null) history = [];
 
-    // se vier como string JSON, parseia
     if (typeof history === 'string') {
       try {
         history = JSON.parse(history);
@@ -39,7 +38,6 @@ class QuestionController {
       history = [];
     }
 
-    // (opcional) limitar tamanho para evitar payload gigante
     const HISTORY_MAX_TURNS = 10;
     history = history.slice(-HISTORY_MAX_TURNS);
 
@@ -72,12 +70,11 @@ class QuestionController {
         return s.length > n ? `${s.slice(0, n)}... [${s.length} chars]` : s;
       };
 
-      // ✅ monta options base (para não repetir)
       const baseOptions = {
-        metric,              // ✅ agora vem da métrica selecionada no front
+        metric,
         metricId: metricId || null,
         metricName: metricName || null,
-        history,             // ✅ NOVO: histórico vai junto
+        history,
         algorithm: modelName,
       };
 
@@ -103,22 +100,45 @@ class QuestionController {
         console.log('[QuestionController] NO-RAG preview:\n', preview(response_norag));
       }
 
-      // compat legado:
-      const legacyResponse = response_rag || response_norag || '';
+      // =========================
+      // ✅ Retorno FINAL (limpo)
+      // =========================
 
+      if (mode === 'rag') {
+        return response.status(200).send({
+          question,
+          model: modelName,
+          metric,
+          metricId: metricId || '',
+          metricName: metricName || '',
+          mode,
+          historyCount: history.length,
+          response_rag: response_rag || '',
+        });
+      }
+
+      if (mode === 'norag') {
+        return response.status(200).send({
+          question,
+          model: modelName,
+          metric,
+          metricId: metricId || '',
+          metricName: metricName || '',
+          mode,
+          historyCount: history.length,
+          response_norag: response_norag || '',
+        });
+      }
+
+      // mode === 'both'
       return response.status(200).send({
         question,
         model: modelName,
-
-        // ✅ retorna os 3 para debug/compat
-        metric,          // string usada internamente (prioriza metricName)
+        metric,
         metricId: metricId || '',
         metricName: metricName || '',
-
         mode,
-        historyCount: history.length, // útil pro front debugar
-
-        response: legacyResponse,
+        historyCount: history.length,
         response_rag: response_rag || '',
         response_norag: response_norag || '',
       });
