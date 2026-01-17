@@ -9,6 +9,57 @@ const pdfParse = require('pdf-parse'); // <-- necessário para ler PDF do arxiv
 // ARXIV_FETCH_PDF=false -> usa apenas título + resumo (abstract)
 const ARXIV_FETCH_PDF = (process.env.ARXIV_FETCH_PDF || 'false').toLowerCase() === 'true';
 
+// ===================================================================
+// ✅ Helpers (arXiv query baseada na PERGUNTA)
+// ===================================================================
+
+function _normalizeForArxiv(s = '') {
+  return String(s)
+    .replace(/\s+/g, ' ')
+    .replace(/"/g, '')
+    .trim();
+}
+
+// Stopwords PT+EN (simples e eficiente)
+function _extractKeywords(question, max = 6) {
+  const q = String(question || '').toLowerCase();
+
+  const stop = new Set([
+    // EN
+    'the','a','an','and','or','to','of','in','on','for','with','without','how','why','what','which','when',
+    'does','do','did','are','is','was','were','be','been','being','between','across','from','into','by',
+    'affect','impact','influence','cause','causes','causing','behavior','measurements','measurement',
+    // PT
+    'o','a','os','as','um','uma','uns','umas','de','da','do','das','dos','em','no','na','nos','nas',
+    'para','por','com','sem','sobre','como','porque','porquê','qual','quais','quando','entre','afeta',
+    'impacta','influencia','medicao','medição','medidas','comportamento'
+  ]);
+
+  const tokens = q
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t && t.length >= 3 && !stop.has(t));
+
+  // Remove duplicados preservando ordem
+  const uniq = [];
+  const seen = new Set();
+  for (const t of tokens) {
+    if (!seen.has(t)) {
+      seen.add(t);
+      uniq.push(t);
+    }
+    if (uniq.length >= max) break;
+  }
+  return uniq;
+}
+
+function _all(term) {
+  const t = _normalizeForArxiv(term);
+  if (!t) return '';
+  return `all:"${t}"`;
+}
+
 class WebRAGService {
   constructor({
     enabled,
@@ -32,7 +83,7 @@ class WebRAGService {
     this.engine = engine;
 
     // Bases configuradas via ENV para o modo "multi"
-    // Ex.: WEB_RAG_BASES=Tavily,Arxiv,Brave,Serper
+    // Ex.: WEB_RAG_BASES=tavily,arxiv,brave,serper
     this.bases = (process.env.WEB_RAG_BASES || 'tavily,brave,arxiv,serper')
       .split(',')
       .map((s) => s.trim().toLowerCase())
@@ -226,7 +277,9 @@ class WebRAGService {
 
     try {
       const url = new URL(this.braveEndpoint);
-      const safeCount = process.env.WEB_RAG_MAX_RESULTS;
+
+      // ✅ FIX: não use process.env diretamente (pode virar "undefined")
+      const safeCount = Number.isFinite(Number(this.maxResults)) ? Number(this.maxResults) : 5;
 
       url.searchParams.set('q', query || '');
       url.searchParams.set('count', String(safeCount));
@@ -336,7 +389,7 @@ class WebRAGService {
     }
   }
 
-  // ---------------- ARXIV (Atom + PDF OPCIONAL, focado em <metric> + blockchain) ----------------
+  // ---------------- ARXIV (Atom + PDF OPCIONAL, com query baseada na PERGUNTA + métrica) ----------------
   async _callArxiv(query, metric) {
     if (!this.fetch || !this.arxivEndpoint) {
       console.log('WebRAG[arxiv] desabilitado (sem fetch ou endpoint).');
@@ -344,29 +397,24 @@ class WebRAGService {
     }
 
     try {
-      // Normaliza query base (caso queira aproveitar algo da pergunta)
-      const base = (query || '')
-        .toString()
-        .replace(/\s+/g, ' ')
-        .replace(/"/g, '')
-        .trim();
+      const base = _normalizeForArxiv(query);
+      const metricTerm = _normalizeForArxiv(metric);
 
-      // Nome da métrica vindo do evaluationMetrics.js (ex: "Latency", "Throughput")
-      const metricTerm = (metric || '')
-        .toString()
-        .replace(/\s+/g, ' ')
-        .replace(/"/g, '')
-        .trim();
+      // ✅ Extrai keywords da pergunta (query já vem "normalizada" do chat)
+      const kw = _extractKeywords(base, 6);
 
-      // 🔹 Construção da query para o arXiv:
-      // Regra: NÃO usar outros termos, apenas a métrica e "blockchain".
-      let mainQuery;
-      if (metricTerm) {
-        mainQuery = `all:"${metricTerm} blockchain"`;
-      } else if (base) {
-        mainQuery = `all:"${base} blockchain"`;
+      // ✅ Query arXiv: all:"blockchain" AND ( all:"Latency" OR all:"clock" OR ... )
+      const must = [_all('blockchain')].filter(Boolean);
+
+      const should = [];
+      if (metricTerm) should.push(_all(metricTerm));
+      for (const k of kw) should.push(_all(k));
+
+      let mainQuery = '';
+      if (should.length) {
+        mainQuery = `${must.join(' AND ')} AND (${should.join(' OR ')})`;
       } else {
-        mainQuery = 'all:blockchain';
+        mainQuery = `${must.join(' AND ')}`;
       }
 
       const q = encodeURIComponent(mainQuery);
@@ -490,21 +538,19 @@ class WebRAGService {
 
         if (!content || content.length < 50) continue;
 
-        // 🔹 Filtro extra de domínio:
-        // Regra: só usar "blockchain" e a métrica como filtro.
-        const mustHave = ['blockchain'];
-        if (metricTerm) {
-          mustHave.push(metricTerm.toLowerCase());
-        }
-
+        // ✅ Filtro final: exige "blockchain" E (métrica OU keyword da pergunta)
         const lower = content.toLowerCase();
-        const isOnDomain = mustHave.some(term =>
-          lower.includes(term.toLowerCase())
-        );
+        const hasBlockchain = lower.includes('blockchain');
 
-        if (!isOnDomain) {
-          continue;
-        }
+        const mustSignals = [];
+        if (metricTerm) mustSignals.push(metricTerm.toLowerCase());
+        mustSignals.push(...kw.map((x) => x.toLowerCase()));
+
+        const hasAnySignal = mustSignals.length
+          ? mustSignals.some((term) => term && lower.includes(term))
+          : true;
+
+        if (!hasBlockchain || !hasAnySignal) continue;
 
         docs.push({
           content,

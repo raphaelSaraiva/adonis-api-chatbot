@@ -20,10 +20,7 @@ if (typeof _fetch !== 'function') {
   }
 }
 if (typeof _fetch !== 'function') {
-  console.error(
-    '[MetricRAGChatService] ATENÇÃO: _fetch continua indisponível; chamadas HTTP ' +
-      'para tradução / Ollama / LM Studio / WebRAG vão falhar.'
-  );
+  console.error('[MetricRAGChatService] ATENÇÃO: _fetch indisponível; WebRAG/Ollama/LM Studio podem falhar.');
 }
 
 // ===================================================================
@@ -117,11 +114,11 @@ function loadSystemPromptSync(lang = 'pt', useRag = true) {
 
   const fallbackRag =
     'You are a helpful assistant that answers questions about software metrics for blockchain systems. ' +
-    'Use strictly the provided context. If the context is insufficient, say that you are not sure.';
+    'Use the provided context when available. Be concise and technical.';
 
   const fallbackNoRag =
     'You are a helpful assistant that answers questions about software metrics for blockchain systems. ' +
-    'Answer clearly and concisely. If you are not sure, say that you are not sure.';
+    'Answer clearly, concisely, and technically.';
 
   systemPromptCache[key] = useRag ? fallbackRag : fallbackNoRag;
   return systemPromptCache[key];
@@ -278,144 +275,97 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
 }
 
 // ===================================================================
-// ✅ Contract + limpeza anti-id + anti-“referências visíveis”
+// ✅ Contratos: curtos, estilo evaluateMetrics.js (3–5 frases)
+// - Sem seções fixas
+// - Proíbe "paper-tone" (foi proposto/estudos mostram) sem evidência explícita
 // ===================================================================
 
-function buildAnswerContract(answerLanguage, { isRag = false } = {}) {
-  const lang = (answerLanguage || 'pt').toLowerCase();
-
-  const basePt = [
-    'Siga EXATAMENTE a estrutura abaixo (sem adicionar seções extras):',
-    '1. Definição da métrica',
-    '2. Como a métrica é medida',
-    '3. Principais fatores que influenciam a métrica',
-    '4. Interpretação prática dos valores',
-    '',
-    'Regras:',
-    '- Use parágrafos curtos e objetivos.',
-    '- Não inclua introduções longas nem conclusões fora das 4 seções.',
-    '- NÃO cite IDs/códigos internos (ex.: "t12") em nenhuma parte da resposta.',
-    '- NÃO mencione “fontes”, “trechos”, “contexto”, “documentos” ou qualquer referência/metadata. (isso é interno)',
-  ];
-
-  const baseEn = [
-    'Follow EXACTLY the structure below (do not add extra sections):',
-    '1. Metric definition',
-    '2. How the metric is measured',
-    '3. Main factors influencing the metric',
-    '4. Practical interpretation of values',
-    '',
-    'Rules:',
-    '- Use short, objective paragraphs.',
-    '- Do not add long intros or conclusions outside the 4 sections.',
-    '- DO NOT mention internal IDs/codes (e.g., "t12") anywhere.',
-    '- DO NOT mention “sources”, “excerpts”, “context”, “documents”, or any reference/metadata. (internal only)',
-  ];
-
-  if (lang === 'pt') {
-    if (isRag) {
-      basePt.push(
-        '- Use APENAS o que estiver presente no CONTEXTO fornecido.',
-        '- Se o contexto não trouxer informação suficiente para alguma seção, escreva: "Informação não disponível" (na própria seção).',
-        '- Não complete com conhecimento externo.'
-      );
-    } else {
-      basePt.push('- Se não tiver certeza, diga que não tem certeza.');
-    }
-    return basePt.join('\n');
-  }
-
-  if (isRag) {
-    baseEn.push(
-      '- Use ONLY what is present in the provided CONTEXT.',
-      '- If the context is insufficient for a section, write: "Information not available" inside that section.',
-      '- Do not fill gaps with external knowledge.'
-    );
-  } else {
-    baseEn.push('- If you are not sure, say you are not sure.');
-  }
-  return baseEn.join('\n');
-}
-
-function buildAnalysisContract(answerLanguage, { isRag = false } = {}) {
+function buildShortAnswerContract(answerLanguage, { strictToContext } = {}) {
   const lang = (answerLanguage || 'pt').toLowerCase();
 
   if (lang === 'pt') {
     const lines = [
-      'Responda DIRETAMENTE à pergunta do usuário.',
-      'Estrutura obrigatória (sem adicionar seções extras):',
-      '1. Efeito nas medições de latência (como distorce/viés/erro)',
-      '2. Efeito no comportamento do consenso (timeouts, rodadas, estabilidade)',
-      '3. Mitigações práticas (como medir melhor e evitar falsos sinais)',
-      '',
-      'Regras:',
-      '- NÃO faça definição geral da métrica (evite “Latência é…”), a menos que a pergunta peça explicitamente.',
-      '- Use parágrafos curtos e objetivos.',
-      '- NÃO cite IDs/códigos internos (ex.: "t12").',
-      '- NÃO mencione “fontes”, “trechos”, “contexto”, “documentos” ou qualquer referência/metadata. (isso é interno)',
+      'Responda de forma técnica e direta.',
+      'Máximo de 3 a 5 frases. Sem listas, sem headings, sem seções.',
+      'Não inclua introduções ou conclusões. Vá direto ao ponto.',
+      'Não mencione IDs/códigos internos (ex.: "t12").',
+      'Evite tom de artigo ("foi proposto", "estudos mostram", "na literatura") a menos que isso esteja explicitamente no contexto.',
+      strictToContext
+        ? 'Use APENAS o que estiver presente no CONTEXTO. Se não houver base suficiente, diga isso em 1 frase e pare.'
+        : 'Se faltar dado específico, responda com comportamento típico (sem inventar números) e deixe isso claro na primeira frase.',
     ];
-
-    if (isRag) {
-      lines.push(
-        '- Use APENAS o que estiver presente no CONTEXTO fornecido.',
-        '- Se o contexto não trouxer informação suficiente, diga explicitamente: "Informação não disponível".'
-      );
-    } else {
-      lines.push('- Se não tiver certeza, diga que não tem certeza.');
-    }
-
     return lines.join('\n');
   }
 
   const lines = [
-    'Answer the user DIRECTLY.',
-    'Required structure (do not add extra sections):',
-    '1. Effect on latency measurements (bias/error/distortion)',
-    '2. Effect on consensus behavior (timeouts/rounds/stability)',
-    '3. Practical mitigations (how to measure better / avoid false signals)',
-    '',
-    'Rules:',
-    '- Do NOT provide a generic metric definition (avoid “Latency is…”), unless the user explicitly asks.',
-    '- Use short, objective paragraphs.',
-    '- Do NOT mention internal IDs/codes (e.g., "t12").',
-    '- Do NOT mention “sources/excerpts/context/documents” or any reference/metadata. (internal only)',
+    'Answer technically and directly.',
+    'Maximum 3 to 5 sentences. No lists, no headings, no extra sections.',
+    'No long intros or conclusions. Go straight to the point.',
+    'Do not mention internal IDs/codes (e.g., "t12").',
+    'Avoid paper-like claims ("was proposed", "studies show", "in the literature") unless explicitly present in the context.',
+    strictToContext
+      ? 'Use ONLY what is present in the CONTEXT. If there is not enough basis, say so in 1 sentence and stop.'
+      : 'If specific data is missing, answer using typical behavior (no made-up numbers) and make that explicit in the first sentence.',
   ];
-
-  if (isRag) {
-    lines.push(
-      '- Use ONLY what is present in the provided CONTEXT.',
-      '- If the context is insufficient, say explicitly: "Information not available".'
-    );
-  } else {
-    lines.push('- If you are not sure, say you are not sure.');
-  }
-
   return lines.join('\n');
 }
 
 function stripInternalCodesFromAnswer(text) {
   let t = String(text || '');
-
   t = t.replace(/metric\s*id\s*[:=]\s*\\?["']?[a-z]\d{1,6}\\?["']?/gi, '');
   t = t.replace(/metricId\s*[:=]\s*\\?["']?[a-z]\d{1,6}\\?["']?/g, '');
-
   t = t.replace(/[\(\[\{]\s*[a-z]\d{1,6}\s*[\)\]\}]/gi, '');
-
-  t = t.replace(/\b([a-z]\d{1,6})\b/gi, (m) => {
-    if (/^p\d+$/i.test(m)) return m;
-    return '';
-  });
-
-  // remove menções explícitas a “contexto/trechos/fontes”
-  t = t.replace(/\b(com base (no|nas) (contexto|fontes|trechos|documentos).*)/gi, '');
-  t = t.replace(/\b(segundo (o|as) (contexto|fontes|trechos|documentos).*)/gi, '');
-
   t = t.replace(/\s{2,}/g, ' ').replace(/\s+\n/g, '\n').trim();
   return t;
 }
 
+function postprocessShortAnswer(raw, { maxSentences = 5 } = {}) {
+  if (!raw) return '';
+  let s = String(raw).trim();
+
+  // remove markdown comum
+  s = s.replace(/\*\*/g, '');
+  s = s.replace(/^[-*]\s+/gm, '');
+  s = s.replace(/```[\s\S]*?```/g, '');
+
+  // corta por frases
+  const parts = s
+    .split(/(?<=[\.\!\?])\s+/)
+    .map(p => p.trim())
+    .filter(Boolean);
+
+  const picked = parts.slice(0, Math.max(3, Math.min(maxSentences, 6)));
+  return picked.join(' ').trim();
+}
+
+function looksLikeNoInfoAnswer(text, lang = 'pt') {
+  const t = String(text || '').toLowerCase();
+  if (!t) return true;
+
+  const patternsPt = [
+    'não há informação suficiente',
+    'não encontrei informação suficiente',
+    'informação não disponível',
+    'não disponível no contexto',
+    'não tenho informação suficiente',
+    'sem informação suficiente',
+    'não é possível responder com segurança',
+  ];
+
+  const patternsEn = [
+    'not enough information',
+    'insufficient information',
+    'information not available',
+    'not available in the context',
+    'cannot answer safely',
+  ];
+
+  const patterns = (lang || 'pt').toLowerCase() === 'pt' ? patternsPt : patternsEn;
+  return patterns.some(p => t.includes(p));
+}
+
 // ===================================================================
-// ✅ Guard via LLM (opcional)
+// ✅ Classificador/Guard (mantidos, mas sem “caso especial” por tópico)
 // ===================================================================
 
 async function llmGuardMetricQuestion({ userText, metric, modelName, answerLanguage = 'pt' }) {
@@ -455,44 +405,26 @@ async function llmGuardMetricQuestion({ userText, metric, modelName, answerLangu
   }
 }
 
-// ===================================================================
-// ✅ Classificador (métrica vs análise)
-// ===================================================================
+// Heurística genérica (sem tópico específico):
+// se fala de experimento/impacto/condições/resultado, preferimos "analysis-style"
+// mas a resposta continua curta (sem seções).
+function isAnalysisStyleQuestionHeuristic(question) {
+  const q = String(question || '').toLowerCase().trim();
+  if (!q) return false;
 
-async function llmClassifyQuestionType({ userText, metric, modelName }) {
-  const system =
-    'You are a strict classifier for a Metrics Q&A system. ' +
-    'Return ONLY valid JSON. No markdown. No extra text.';
+  const patterns = [
+    /\bhow\b/, /\bwhy\b/, /\baffect\b/, /\bimpact\b/, /\binfluence\b/,
+    /\bunder\s+load\b/, /\bworkload\b/, /\bexperiment\b/, /\bresults?\b/,
+    /\baccording\s+to\b/, /\bstudy\b/, /\bobserved\b/, /\bbehavior\b/,
+    /\btrade-?off\b/, /\blimitations?\b/, /\bvariance\b/, /\bjitter\b/,
+    /\btimeout\b/, /\brounds?\b/, /\bvalidators?\b/,
+  ];
 
-  const user =
-    `User message:\n"""${String(userText || '').trim()}"""\n\n` +
-    `Metric context (if any): "${String(metric || '').trim()}"\n\n` +
-    'Return JSON with exactly these keys:\n' +
-    '{ "question_type": "metric_contract" | "analysis_contract", "reason": string }\n' +
-    'Choose "metric_contract" when the user is asking for definition/measurement/factors/interpretation of the metric itself.\n' +
-    'Choose "analysis_contract" when the user is asking about an experiment, workload conditions, comparative behavior, causes/effects, or "according to the article" style questions.\n';
-
-  const raw = await generateWithLLM(system, user, modelName, { temperature: 0.0 });
-  if (!raw) return { question_type: 'metric_contract', reason: 'classifier_failed' };
-
-  const txt = String(raw).trim();
-  const start = txt.indexOf('{');
-  const end = txt.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    return { question_type: 'metric_contract', reason: 'invalid_classifier_output' };
-  }
-
-  try {
-    const obj = JSON.parse(txt.slice(start, end + 1));
-    const qt = obj?.question_type === 'analysis_contract' ? 'analysis_contract' : 'metric_contract';
-    return { question_type: qt, reason: typeof obj.reason === 'string' ? obj.reason : '' };
-  } catch {
-    return { question_type: 'metric_contract', reason: 'classifier_parse_failed' };
-  }
+  return patterns.some((re) => re.test(q));
 }
 
 // ===================================================================
-// ✅ Helpers
+// ✅ Helpers: normalize metric + history
 // ===================================================================
 
 function normalizeMetric(opts) {
@@ -517,12 +449,7 @@ function formatHistoryForPrompt(history, maxTurns = 6) {
       const q = clampText(h?.question);
       const a = clampText(h?.chosenText || h?.response || h?.answer);
       if (!q && !a) return null;
-
-      return [
-        `# Turn ${i + 1}`,
-        q ? `User: ${q}` : null,
-        a ? `Assistant: ${a}` : null,
-      ]
+      return [`# Turn ${i + 1}`, q ? `User: ${q}` : null, a ? `Assistant: ${a}` : null]
         .filter(Boolean)
         .join('\n');
     })
@@ -533,7 +460,7 @@ function formatHistoryForPrompt(history, maxTurns = 6) {
 }
 
 // ===================================================================
-// ✅ Docs helpers (normalize + rerank)
+// ✅ Docs helpers (normalize + rerank + compress) — genérico
 // ===================================================================
 
 function normalizeDocs(docs, origin = 'local') {
@@ -548,18 +475,18 @@ function normalizeDocs(docs, origin = 'local') {
           ? d.similarity
           : (d.similarity != null ? Number(d.similarity) : undefined),
       page: d.page ?? d.metadata?.page,
-      chunk_index: typeof d.chunk_index === 'number' ? d.chunk_index : undefined,
     }))
     .filter((x) => x.content && x.content.trim().length > 0);
 }
 
-function topKeywords(text, n = 10) {
+function topKeywords(text, n = 12) {
   const stop = new Set([
     'a','o','os','as','de','da','do','das','dos',
     'em','no','na','nos','nas','um','uma','e','é','que',
     'com','para','por','se','sem','ou','ao','à','às','sobre',
     'como','qual','quais','porque','porquê','por que','por quê'
   ]);
+
   return String(text || '')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
@@ -568,29 +495,79 @@ function topKeywords(text, n = 10) {
     .slice(0, n);
 }
 
+// Rerank genérico: keywords + sim + bônus web + penalidade por texto longo
 function rerankDocs(docs, question, topK) {
   if (!Array.isArray(docs) || docs.length === 0) return [];
-  const qkw = topKeywords(question, 10);
+  const qkw = topKeywords(question, 14);
 
   const scored = docs.map((d) => {
     const text = (d.content || '').toLowerCase();
     const source = String(d.source || '').toLowerCase();
 
     let score = 0;
-    for (const kw of qkw) if (kw && text.includes(kw)) score += 3;
+
+    for (const kw of qkw) if (kw && text.includes(kw)) score += 6;
 
     const sim = (typeof d.similarity === 'number') ? d.similarity : Number(d.similarity || 0);
     if (!Number.isNaN(sim) && sim > 0) score += sim * 2;
 
-    if (d.origin === 'web' || source.startsWith('http://') || source.startsWith('https://')) score += 1.0;
-    if (text.length > 8000) score -= 1.5;
+    if (d.origin === 'web' || source.startsWith('http://') || source.startsWith('https://')) score += 2.0;
+
+    const len = text.length;
+    if (len > 8000) score -= 2;
+    else if (len > 4000) score -= 1;
 
     return { d, score };
   });
 
   scored.sort((a, b) => b.score - a.score);
-  const picked = scored.filter(x => x.score > 0).slice(0, Math.max(3, topK)).map(x => x.d);
-  return picked.length ? picked : scored.slice(0, Math.max(3, topK)).map(x => x.d);
+
+  let picked = scored.filter(x => x.score > 0);
+  if (picked.length < Math.min(topK, 4)) picked = scored.slice(0, Math.max(topK, 4));
+
+  return picked.slice(0, Math.max(topK, 3)).map(x => x.d);
+}
+
+// Contexto em blocos "Trecho N:" (sem fontes)
+function compressContextForLLM(docs, { maxChars = 4500, perDocChars = 1200 } = {}) {
+  let out = '';
+  const used = [];
+  let idx = 1;
+
+  for (const d of docs) {
+    if (!d?.content) continue;
+
+    const piece = String(d.content).trim().slice(0, perDocChars);
+    const block = `Trecho ${idx}:\n${piece}\n`;
+
+    if (out.length + block.length > maxChars) break;
+
+    out += (out ? '\n' : '') + block;
+    used.push(d);
+    idx += 1;
+
+    if (out.length >= maxChars) break;
+  }
+
+  return { context: out.trim(), usedDocs: used };
+}
+
+// Evidência mínima genérica: overlap de keywords da pergunta no contexto
+function hasMinimumEvidence(question, docs, { minHits = 2 } = {}) {
+  if (!question) return false;
+  if (!Array.isArray(docs) || docs.length === 0) return false;
+
+  const qkw = topKeywords(question, 12);
+  if (!qkw.length) return false;
+
+  const joined = docs.map(d => String(d?.content || '')).join('\n').toLowerCase();
+
+  let hits = 0;
+  for (const kw of qkw) {
+    if (kw && joined.includes(kw)) hits += 1;
+    if (hits >= minHits) return true;
+  }
+  return false;
 }
 
 // ===================================================================
@@ -603,14 +580,25 @@ class MetricRAGChatService {
 
     this.answerLanguage = (envGet('ANSWER_LANGUAGE', 'pt') || 'pt').toLowerCase();
 
-    // Mantive seu padrão atual, mas você pode subir isso no controller se quiser
-    this.retrieveTopK = envInt('RETRIEVE_TOP_K', 6);
-    this.minSimilarity = envFloat('MIN_LOCAL_SIMILARITY', 0.0);
+    this.retrieveTopK = envInt('RETRIEVE_TOP_K', 20);
+    this.finalContextDocs = envInt('FINAL_CONTEXT_DOCS', 6);
+    this.minSimilarity = envFloat('MIN_LOCAL_SIMILARITY', 0.6);
 
-    // ✅ WEBRAG igual ao evaluateMetrics.js: se enabled, chama SEMPRE para complementar
-    this.webRagEnabled = envGet('WEB_RAG_ENABLED', '0') === '1'; // <- igual runner
+    this.contextMaxChars = envInt('CONTEXT_MAX_CHARS', 4500);
+    this.contextDocChars = envInt('CONTEXT_DOC_CHARS', 1200);
+    this.debugContext = envBool('DEBUG_CONTEXT', false);
+
+    // ✅ WebRAG: habilita se WEB_RAG_ENABLED=1 (sem gate; sempre tenta)
+    const rawWebEnabled = envGet('WEB_RAG_ENABLED', '0');
+    this.webRagEnabled = rawWebEnabled === '1' || envBool('WEB_RAG_ENABLED', false);
+
     this.webRagMaxResults = envInt('WEB_RAG_MAX_RESULTS', 10);
     this.webRagEngine = envGet('WEB_RAG_ENGINE', 'multi');
+
+    // ✅ Qualidade: fallback no-rag quando RAG vier "no info"
+    // (mantém RAG bom quando ele já respondeu bem)
+    this.allowFallbackWithoutEvidence =
+      envGet('ALLOW_FALLBACK_WITHOUT_EVIDENCE', '1') === '1' || envBool('ALLOW_FALLBACK_WITHOUT_EVIDENCE', true);
 
     this.webRag = new WebRAGService({
       enabled: this.webRagEnabled,
@@ -626,15 +614,13 @@ class MetricRAGChatService {
       serperApiKey: envGet('SERPER_API_KEY', ''),
     });
 
-    console.log('[MetricRAGChatService] init', {
-      ANSWER_LANGUAGE: this.answerLanguage,
-      RETRIEVE_TOP_K: this.retrieveTopK,
-      MIN_LOCAL_SIMILARITY: this.minSimilarity,
-      WEB_RAG_ENABLED: this.webRagEnabled,
-      WEB_RAG_ENGINE: this.webRagEngine,
-      WEB_RAG_MAX_RESULTS: this.webRagMaxResults,
-      fetchAvailable: typeof _fetch === 'function',
-    });
+    console.log(
+      `[MetricRAGChatService] init: ANSWER_LANGUAGE=${this.answerLanguage} ` +
+      `RETRIEVE_TOP_K=${this.retrieveTopK} FINAL_CONTEXT_DOCS=${this.finalContextDocs} ` +
+      `MIN_LOCAL_SIMILARITY=${this.minSimilarity} CONTEXT_MAX_CHARS=${this.contextMaxChars} ` +
+      `WEB_RAG_ENABLED(raw=${rawWebEnabled}) => ${this.webRagEnabled} MAX_RESULTS=${this.webRagMaxResults} ENGINE=${this.webRagEngine} ` +
+      `ALLOW_FALLBACK_WITHOUT_EVIDENCE=${this.allowFallbackWithoutEvidence}`
+    );
   }
 
   async ensureInitializedForAlgorithm(algorithmName) {
@@ -644,6 +630,7 @@ class MetricRAGChatService {
       const rag = new MetricRAGService(algorithmName);
       await rag.connect();
       this.ragByAlgorithm[algorithmName] = rag;
+      console.log(`[MetricRAGChatService] RAG conectado para algorithm=${algorithmName}`);
     }
   }
 
@@ -686,16 +673,12 @@ class MetricRAGChatService {
 
     const metricLabel = (metricName || metric || '').trim() || 'Latency';
 
-    console.log('[MetricRAGChatService] /ask internal', {
-      useRag,
-      algorithm,
-      metricLabel,
-      historyTurns: Array.isArray(history) ? history.length : 0,
-      webRagEnabled: this.webRagEnabled,
-      webRagEngine: this.webRagEngine,
-    });
+    console.log(
+      `[MetricRAGChatService] askQuestion: useRag=${useRag} metric=${metricLabel} algorithm=${algorithm} ` +
+      `historyTurns=${Array.isArray(history) ? history.length : 0}`
+    );
 
-    // ✅ Guard (LLM) — opcional
+    // Guard
     const guard = await llmGuardMetricQuestion({
       userText: question,
       metric: metricLabel,
@@ -704,34 +687,25 @@ class MetricRAGChatService {
     });
 
     if (!guard.is_metric_question) {
+      console.warn('[MetricRAGChatService] guard bloqueou:', guard.reason);
       return this.answerLanguage === 'pt'
         ? '⚠️ A mensagem enviada não parece ser uma pergunta sobre métricas.'
         : '⚠️ Your message does not look like a metrics question.';
     }
 
-    // ✅ NEW: classifica o “tipo” da pergunta para NÃO forçar definição
-    const qType = await llmClassifyQuestionType({
-      userText: question,
-      metric: metricLabel,
-      modelName: algorithm,
-    });
-    const useAnalysisContract = qType.question_type === 'analysis_contract';
+    const analysisStyle = isAnalysisStyleQuestionHeuristic(question);
 
-    console.log('[MetricRAGChatService] question type', qType);
-
-    // 1) traduz pergunta para EN (melhor p/ busca e consistência do RAG)
+    // traduz pergunta para EN (retriever/WebRAG)
     const qEn = await translateText(question, 'en');
+    const qOriginal = String(question || '').trim();
 
-    // 2) system prompt
     const systemPrompt = loadSystemPromptSync(this.answerLanguage, useRag);
 
-    // ----------------------------------------------------------------
+    // ------------------------------------------------------------
     // NO-RAG
-    // ----------------------------------------------------------------
+    // ------------------------------------------------------------
     if (!useRag) {
-      const contract = useAnalysisContract
-        ? buildAnalysisContract(this.answerLanguage, { isRag: false })
-        : buildAnswerContract(this.answerLanguage, { isRag: false });
+      const contract = buildShortAnswerContract(this.answerLanguage, { strictToContext: false });
 
       const userPrompt = [
         `You are answering a question related to the metric "${metricLabel}".`,
@@ -746,128 +720,136 @@ class MetricRAGChatService {
         `Answer in ${langStr}:`,
       ].filter(Boolean).join('\n');
 
-      const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm);
-      if (!rawAnswer) return 'Não foi possível obter uma resposta da LLM no momento.';
+      const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm, { temperature: 0.2 });
+      if (!rawAnswer) {
+        return this.answerLanguage === 'pt'
+          ? 'Não foi possível obter uma resposta da LLM no momento.'
+          : 'Could not get an answer from the LLM right now.';
+      }
 
       const cleaned = stripInternalCodesFromAnswer(rawAnswer);
-      if (this.answerLanguage === 'pt') return translateText(cleaned, 'pt');
-      return cleaned;
+      const short = postprocessShortAnswer(cleaned, { maxSentences: 5 });
+      return this.answerLanguage === 'pt' ? translateText(short, 'pt') : short;
     }
 
-    // ----------------------------------------------------------------
+    // ------------------------------------------------------------
     // RAG local
-    // ----------------------------------------------------------------
+    // ------------------------------------------------------------
     await this.ensureInitializedForAlgorithm(algorithm);
     const rag = this.ragByAlgorithm[algorithm];
 
-    const localDocsRaw = await rag.queryDocuments(metric, qEn, this.retrieveTopK, {
-      minSimilarity: this.minSimilarity,
-      fetchMultiplier: 3,
-    });
+    let localDocsRaw = [];
+    try {
+      localDocsRaw = await rag.queryDocuments(metric, qEn, this.retrieveTopK, {
+        minSimilarity: this.minSimilarity,
+        fetchMultiplier: 3,
+      });
+    } catch (e) {
+      console.warn('[MetricRAGChatService] queryDocuments falhou:', e.message);
+    }
 
-    const localDocs = normalizeDocs(localDocsRaw, 'local');
+    let localDocs = normalizeDocs(localDocsRaw, 'local');
     const bestLocalSim = localDocs.length
       ? Math.max(...localDocs.map(d => Number(d.similarity || 0)))
       : 0;
 
-    console.log('[MetricRAGChatService] local docs', {
-      count: localDocs.length,
-      bestLocalSim: Number(bestLocalSim.toFixed(4)),
-      minSimilarity: this.minSimilarity,
-      retrieveTopK: this.retrieveTopK,
-    });
+    console.log(
+      `[MetricRAGChatService] localDocs=${localDocs.length} bestLocalSim=${Number(bestLocalSim).toFixed(3)} ` +
+      `(minSimilarity=${this.minSimilarity})`
+    );
 
-    // ----------------------------------------------------------------
-    // ✅ WebRAG (IGUAL ao evaluateMetrics.js): se enabled, SEMPRE chama para complementar
-    // ----------------------------------------------------------------
+    // ------------------------------------------------------------
+    // ✅ WebRAG SEM RESTRIÇÃO (se habilitado, sempre tenta)
+    // ------------------------------------------------------------
     let webDocs = [];
-    if (this.webRagEnabled) {
-      const canQueryWeb =
-        typeof this.webRag?.query === 'function' &&
-        typeof _fetch === 'function';
+    let usedWeb = false;
 
-      console.log('[MetricRAGChatService] WebRAG check', {
-        enabled: this.webRagEnabled,
-        canQueryWeb,
-        engine: this.webRagEngine,
-        maxResults: this.webRagMaxResults,
-      });
+    const canWeb =
+      this.webRagEnabled &&
+      typeof this.webRag?.query === 'function' &&
+      typeof _fetch === 'function';
 
-      if (canQueryWeb) {
-        try {
-          console.log('[MetricRAGChatService] 🌐 WebRAG calling...');
-          const t0 = Date.now();
-          const webDocsRaw = await this.webRag.query(qEn, metricLabel); // <- igual runner (question, metric)
-          const ms = Date.now() - t0;
+    if (canWeb) {
+      console.log('[MetricRAGChatService] 🌐 WebRAG habilitado — buscando SEM restrição...');
+      try {
+        const webDocsRaw = await this.webRag.query(qEn, metricLabel);
+        webDocs = normalizeDocs(webDocsRaw, 'web');
 
-          webDocs = normalizeDocs(webDocsRaw, 'web');
+        // (opcional) evita explosão de ruído
+        const maxWeb = Math.max(this.retrieveTopK, 20);
+        if (webDocs.length > maxWeb) webDocs = webDocs.slice(0, maxWeb);
 
-          console.log('[MetricRAGChatService] 🌐 WebRAG done', {
-            ms,
-            webCount: webDocs.length,
-          });
-        } catch (e) {
-          console.warn('[MetricRAGChatService] WebRAG falhou:', e.message);
-        }
-      } else {
-        console.warn('[MetricRAGChatService] WebRAG enabled, mas fetch/query indisponível.');
+        usedWeb = webDocs.length > 0;
+        console.log(`[MetricRAGChatService] 🌐 WebRAG retornou webDocs=${webDocs.length}`);
+      } catch (e) {
+        console.warn('[MetricRAGChatService] 🌐 WebRAG falhou:', e.message);
       }
+    } else {
+      console.log(`[MetricRAGChatService] 🌐 WebRAG indisponível (enabled=${this.webRagEnabled}, fetch=${typeof _fetch})`);
     }
 
-    // ----------------------------------------------------------------
-    // combina e rerankeia
-    // ----------------------------------------------------------------
+    // ------------------------------------------------------------
+    // Combine + rerank + final top N
+    // ------------------------------------------------------------
     let combined = [...localDocs, ...webDocs];
-
-    console.log('[MetricRAGChatService] docs combined', {
-      localCount: localDocs.length,
-      webCount: webDocs.length,
-      combinedCount: combined.length,
-    });
 
     if (!combined.length) {
       return this.answerLanguage === 'pt'
         ? 'Não encontrei informação suficiente na base para responder a essa pergunta.'
-        : 'I did not find enough information in the knowledge base to answer this question.';
+        : 'I did not find enough information to answer this question.';
     }
 
-    combined = rerankDocs(combined, question, Math.max(6, this.retrieveTopK));
+    // rerank amplo (usa pergunta ORIGINAL para keywords)
+    combined = rerankDocs(combined, qOriginal, Math.max(this.retrieveTopK, 10));
 
-    // ----------------------------------------------------------------
-    // ✅ CONTEXTO FINAL — SEM headers de fonte (para o usuário NÃO ver)
-    // Mantemos referências apenas em LOGS internos (não vai pro prompt).
-    // ----------------------------------------------------------------
-    const internalRefs = combined.map((d, idx) => ({
-      idx: idx + 1,
-      origin: d.origin,
-      source: d.source,
-      page: d.page ?? null,
-      similarity: typeof d.similarity === 'number' ? Number(d.similarity.toFixed(4)) : null,
-      chunk_index: d.chunk_index ?? null,
-      preview: clampText(d.content, 220),
-    }));
+    // final top N
+    let finalDocs = rerankDocs(combined, qOriginal, this.finalContextDocs);
+    if (!finalDocs.length) finalDocs = combined.slice(0, this.finalContextDocs);
 
-    console.log('[MetricRAGChatService] internal refs (not shown to user)', internalRefs.slice(0, 6));
+    const localCount = finalDocs.filter(d => d.origin !== 'web').length;
+    const webCount = finalDocs.filter(d => d.origin === 'web').length;
 
-    // Só texto puro no contexto (sem “Fonte 1”, sem URL, sem page)
-    const context = combined
-      .map((d) => String(d.content || '').trim())
-      .filter(Boolean)
-      .join('\n\n---\n\n');
+    console.log(
+      `[MetricRAGChatService] ✅ finalDocs=${finalDocs.length} (local=${localCount}, web=${webCount}) ` +
+      (usedWeb ? '• (local + WebRAG)' : '• (apenas local)')
+    );
 
-    // ----------------------------------------------------------------
-    // Prompt final RAG (strict context) + contrato certo (analysis vs metric)
-    // ----------------------------------------------------------------
-    const contract = useAnalysisContract
-      ? buildAnalysisContract(this.answerLanguage, { isRag: true })
-      : buildAnswerContract(this.answerLanguage, { isRag: true });
+    const { context, usedDocs } = compressContextForLLM(finalDocs, {
+      maxChars: this.contextMaxChars,
+      perDocChars: this.contextDocChars,
+    });
+
+    if (this.debugContext) {
+      console.log('\n[MetricRAGChatService][DEBUG_CONTEXT] --- CONTEXTO ENVIADO AO LLM (primeiros 2000 chars) ---\n');
+      console.log(context.slice(0, 2000));
+      console.log('\n[MetricRAGChatService][DEBUG_CONTEXT] --- FIM CONTEXTO ---\n');
+      console.log('[MetricRAGChatService][DEBUG_CONTEXT] usedDocs sources (interno):');
+      usedDocs.forEach((d, i) => {
+        console.log(`  - #${i + 1} origin=${d.origin} sim=${d.similarity ?? 'n/a'} source=${d.source} page=${d.page ?? ''}`);
+      });
+    }
+
+    const hasEvidence = hasMinimumEvidence(qOriginal, finalDocs, { minHits: 2 });
+
+    // ------------------------------------------------------------
+    // Prompt final RAG (short + strict-to-context)
+    // ------------------------------------------------------------
+    const contract = buildShortAnswerContract(this.answerLanguage, { strictToContext: true });
+
+    const strictNote = (!hasEvidence)
+      ? (this.answerLanguage === 'pt'
+        ? 'IMPORTANTE: o contexto recuperado pode não ter evidência suficiente para sustentar uma resposta completa. Se faltar base, diga isso em 1 frase e pare.'
+        : 'IMPORTANT: the retrieved context may not have enough evidence to support a complete answer. If the basis is insufficient, say so in 1 sentence and stop.')
+      : '';
 
     const userPrompt = [
       `You are answering a question related to the metric "${metricLabel}".`,
       '',
       contract,
       '',
-      'CONTEXT (internal excerpts; do not mention them):',
+      strictNote,
+      strictNote ? '' : '',
+      'Context:',
       context,
       '',
       `Question (in English): ${qEn}`,
@@ -875,12 +857,61 @@ class MetricRAGChatService {
       `Answer in ${langStr}:`,
     ].filter(Boolean).join('\n');
 
-    const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm);
-    if (!rawAnswer) return 'Não foi possível obter uma resposta da LLM no momento.';
+    const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm, { temperature: 0.2 });
+    if (!rawAnswer) {
+      return this.answerLanguage === 'pt'
+        ? 'Não foi possível obter uma resposta da LLM no momento.'
+        : 'Could not get an answer from the LLM right now.';
+    }
 
     const cleaned = stripInternalCodesFromAnswer(rawAnswer);
-    if (this.answerLanguage === 'pt') return translateText(cleaned, 'pt');
-    return cleaned;
+    const shortRag = postprocessShortAnswer(cleaned, { maxSentences: 5 });
+
+    // ------------------------------------------------------------
+    // ✅ Qualidade: se RAG vier “no info” / fraco, cai para fallback NO-RAG curto
+    // (assim o RAG nunca fica pior do que o no-rag quando o contexto é ruim)
+    // ------------------------------------------------------------
+    const ragLooksBad =
+      !shortRag ||
+      shortRag.length < 60 ||
+      looksLikeNoInfoAnswer(shortRag, this.answerLanguage);
+
+    if (this.allowFallbackWithoutEvidence && ragLooksBad) {
+      console.log('[MetricRAGChatService] 🔁 RAG fraco/no-info — acionando fallback NO-RAG curto.');
+
+      const fallbackContract = buildShortAnswerContract(this.answerLanguage, { strictToContext: false });
+
+      const fallbackPrompt = [
+        `You are answering a question related to the metric "${metricLabel}".`,
+        '',
+        fallbackContract,
+        '',
+        (this.answerLanguage === 'pt'
+          ? 'Nota: não encontrei base suficiente no contexto recuperado. Responda com base em conhecimento geral, deixando isso explícito na primeira frase.'
+          : 'Note: I did not find enough basis in the retrieved context. Answer using general knowledge, making that explicit in the first sentence.'),
+        '',
+        // usa a pergunta ORIGINAL para o modelo (melhor fluência), mas mantém também EN
+        `Question: ${qOriginal}`,
+        '',
+        `Answer in ${langStr}:`,
+      ].join('\n');
+
+      const fbRaw = await generateWithLLM(
+        loadSystemPromptSync(this.answerLanguage, false),
+        fallbackPrompt,
+        algorithm,
+        { temperature: 0.2 }
+      );
+
+      if (fbRaw && fbRaw.trim()) {
+        const fbClean = stripInternalCodesFromAnswer(fbRaw);
+        const fbShort = postprocessShortAnswer(fbClean, { maxSentences: 5 });
+        return this.answerLanguage === 'pt' ? translateText(fbShort, 'pt') : fbShort;
+      }
+    }
+
+    // Se chegou aqui: RAG está bom o suficiente
+    return this.answerLanguage === 'pt' ? translateText(shortRag, 'pt') : shortRag;
   }
 }
 
