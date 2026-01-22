@@ -195,6 +195,12 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
   const provider = resolveProvider(chosenModel);
   const temperature = typeof opts.temperature === 'number' ? opts.temperature : 0.2;
 
+  // ✅ token budget (compatível com GPT-5.x)
+  const maxCompletionTokens =
+    (Number.isFinite(Number(opts.max_completion_tokens)) ? Number(opts.max_completion_tokens) : null) ??
+    (Number.isFinite(Number(opts.max_tokens)) ? Number(opts.max_tokens) : null) ??
+    null;
+
   // OPENAI
   if (provider === 'openai') {
     const client = getOpenAIClient();
@@ -204,15 +210,21 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
     const realModel = resolveOpenAIModel(chosenModel);
 
     try {
-      const completion = await client.chat.completions.create({
+      const payload = {
         model: realModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
         temperature,
-      });
+      };
 
+      // ✅ GPT-5.x: use max_completion_tokens (não max_tokens)
+      if (Number.isFinite(maxCompletionTokens) && maxCompletionTokens > 0) {
+        payload.max_completion_tokens = maxCompletionTokens;
+      }
+
+      const completion = await client.chat.completions.create(payload);
       return (completion.choices?.[0]?.message?.content || '').trim();
     } catch (e) {
       console.error('[OPENAI] erro:', e.message);
@@ -227,15 +239,22 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
 
     try {
       const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+      const body = {
+        model: chosenModel,
+        prompt: fullPrompt,
+        stream: false,
+        options: { temperature },
+      };
+
+      // (opcional) alguns backends respeitam "num_predict"
+      if (Number.isFinite(maxCompletionTokens) && maxCompletionTokens > 0) {
+        body.options.num_predict = maxCompletionTokens;
+      }
+
       const res = await _fetch(`${OLLAMA_HOST}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: chosenModel,
-          prompt: fullPrompt,
-          stream: false,
-          options: { temperature },
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) return null;
@@ -252,17 +271,24 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
   if (!LMSTUDIO_HOST || typeof _fetch !== 'function') return null;
 
   try {
+    const payload = {
+      model: chosenModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature,
+    };
+
+    // Muitos servidores OpenAI-compat aceitam max_tokens
+    if (Number.isFinite(maxCompletionTokens) && maxCompletionTokens > 0) {
+      payload.max_tokens = maxCompletionTokens;
+    }
+
     const res = await _fetch(`${LMSTUDIO_HOST}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) return null;
@@ -273,6 +299,42 @@ async function generateWithLLM(systemPrompt, userPrompt, modelName, opts = {}) {
     return null;
   }
 }
+
+// ✅ Contrato específico para RAG: mais informativo (genérico)
+// mode:
+// - 'strict'  => só contexto (mais seguro, pode ficar curto/genérico)
+// - 'hybrid'  => contexto como primário + completa com conhecimento geral explicitando
+function buildRagAnswerContract(answerLanguage, { mode = 'hybrid' } = {}) {
+  const lang = (answerLanguage || 'pt').toLowerCase();
+  const strict = mode === 'strict';
+
+  if (lang === 'pt') {
+    const lines = [
+      'Responda de forma técnica e informativa.',
+      'Escreva de 8 a 12 frases. Você pode usar UMA lista curta (até 5 itens) se isso deixar mais claro.',
+      'Use o CONTEXTO como fonte primária.',
+      strict
+        ? 'Use APENAS o que estiver presente no CONTEXTO. Se não houver base suficiente, diga isso em 1 frase e pare.'
+        : 'Se o CONTEXTO não cobrir um detalhe importante, complete com conhecimento geral, mas deixe explícito (ex.: "Em geral,..."). Não invente números.',
+      'Não mencione IDs/códigos internos (ex.: "t12").',
+      'Evite tom de artigo ("foi proposto", "estudos mostram") a menos que o contexto diga isso explicitamente.',
+    ];
+    return lines.join('\n');
+  }
+
+  const lines = [
+    'Answer in a technical and informative way.',
+    'Write 8 to 12 sentences. You may use ONE short list (up to 5 bullets) if it improves clarity.',
+    'Use the CONTEXT as the primary source.',
+    strict
+      ? 'Use ONLY what is present in the CONTEXT. If there is not enough basis, say so in 1 sentence and stop.'
+      : 'If the CONTEXT does not cover an important detail, complete using general knowledge but make that explicit (e.g., "In general,..."). Do not make up numbers.',
+    'Do not mention internal IDs/codes (e.g., "t12").',
+    'Avoid paper-like claims unless explicitly present in the context.',
+  ];
+  return lines.join('\n');
+}
+
 
 // ===================================================================
 // ✅ Contratos: curtos, estilo evaluateMetrics.js (3–5 frases)
@@ -286,23 +348,14 @@ function buildShortAnswerContract(answerLanguage, { strictToContext } = {}) {
   if (lang === 'pt') {
     const lines = [
       'Responda de forma técnica e direta.',
-      'Máximo de 3 a 5 frases. Sem listas, sem headings, sem seções.',
-      'Não inclua introduções ou conclusões. Vá direto ao ponto.',
-      'Não mencione IDs/códigos internos (ex.: "t12").',
-      'Evite tom de artigo ("foi proposto", "estudos mostram", "na literatura") a menos que isso esteja explicitamente no contexto.',
-      strictToContext
-        ? 'Use APENAS o que estiver presente no CONTEXTO. Se não houver base suficiente, diga isso em 1 frase e pare.'
-        : 'Se faltar dado específico, responda com comportamento típico (sem inventar números) e deixe isso claro na primeira frase.',
+      'Máximo de 1 a 3 frases. Sem listas, sem headings, sem seções.',
     ];
     return lines.join('\n');
   }
 
   const lines = [
     'Answer technically and directly.',
-    'Maximum 3 to 5 sentences. No lists, no headings, no extra sections.',
-    'No long intros or conclusions. Go straight to the point.',
-    'Do not mention internal IDs/codes (e.g., "t12").',
-    'Avoid paper-like claims ("was proposed", "studies show", "in the literature") unless explicitly present in the context.',
+    'Maximum 1 to 3 sentences. No lists, no headings, no extra sections.',
     strictToContext
       ? 'Use ONLY what is present in the CONTEXT. If there is not enough basis, say so in 1 sentence and stop.'
       : 'If specific data is missing, answer using typical behavior (no made-up numbers) and make that explicit in the first sentence.',
@@ -319,7 +372,7 @@ function stripInternalCodesFromAnswer(text) {
   return t;
 }
 
-function postprocessShortAnswer(raw, { maxSentences = 5 } = {}) {
+function postprocessShortAnswer(raw, { maxSentences = 20 } = {}) {
   if (!raw) return '';
   let s = String(raw).trim();
 
@@ -383,7 +436,7 @@ async function llmGuardMetricQuestion({ userText, metric, modelName, answerLangu
     '{ "is_metric_question": boolean, "reason": string, "suggested_question": string }\n' +
     `The "suggested_question" must be in ${outLang}.\n`;
 
-  const raw = await generateWithLLM(system, user, modelName, { temperature: 0.0 });
+  const raw = await generateWithLLM(system, user, modelName, { temperature: 0.0, max_completion_tokens: 250 });
   if (!raw) return { is_metric_question: true, reason: 'validator_failed', suggested_question: '' };
 
   const txt = String(raw).trim();
@@ -406,8 +459,6 @@ async function llmGuardMetricQuestion({ userText, metric, modelName, answerLangu
 }
 
 // Heurística genérica (sem tópico específico):
-// se fala de experimento/impacto/condições/resultado, preferimos "analysis-style"
-// mas a resposta continua curta (sem seções).
 function isAnalysisStyleQuestionHeuristic(question) {
   const q = String(question || '').toLowerCase().trim();
   if (!q) return false;
@@ -481,10 +532,10 @@ function normalizeDocs(docs, origin = 'local') {
 
 function topKeywords(text, n = 12) {
   const stop = new Set([
-    'a','o','os','as','de','da','do','das','dos',
-    'em','no','na','nos','nas','um','uma','e','é','que',
-    'com','para','por','se','sem','ou','ao','à','às','sobre',
-    'como','qual','quais','porque','porquê','por que','por quê'
+    'a', 'o', 'os', 'as', 'de', 'da', 'do', 'das', 'dos',
+    'em', 'no', 'na', 'nos', 'nas', 'um', 'uma', 'e', 'é', 'que',
+    'com', 'para', 'por', 'se', 'sem', 'ou', 'ao', 'à', 'às', 'sobre',
+    'como', 'qual', 'quais', 'porque', 'porquê', 'por que', 'por quê'
   ]);
 
   return String(text || '')
@@ -596,9 +647,13 @@ class MetricRAGChatService {
     this.webRagEngine = envGet('WEB_RAG_ENGINE', 'multi');
 
     // ✅ Qualidade: fallback no-rag quando RAG vier "no info"
-    // (mantém RAG bom quando ele já respondeu bem)
     this.allowFallbackWithoutEvidence =
       envGet('ALLOW_FALLBACK_WITHOUT_EVIDENCE', '1') === '1' || envBool('ALLOW_FALLBACK_WITHOUT_EVIDENCE', true);
+
+    // ✅ Orçamento de tokens (RAG > no-RAG) — genérico
+    this.maxTokensNoRag = envInt('MAX_TOKENS_NO_RAG', 350);
+    this.maxTokensRag = envInt('MAX_TOKENS_RAG', 900);
+    this.maxTokensGuard = envInt('MAX_TOKENS_GUARD', 250);
 
     this.webRag = new WebRAGService({
       enabled: this.webRagEnabled,
@@ -619,7 +674,8 @@ class MetricRAGChatService {
       `RETRIEVE_TOP_K=${this.retrieveTopK} FINAL_CONTEXT_DOCS=${this.finalContextDocs} ` +
       `MIN_LOCAL_SIMILARITY=${this.minSimilarity} CONTEXT_MAX_CHARS=${this.contextMaxChars} ` +
       `WEB_RAG_ENABLED(raw=${rawWebEnabled}) => ${this.webRagEnabled} MAX_RESULTS=${this.webRagMaxResults} ENGINE=${this.webRagEngine} ` +
-      `ALLOW_FALLBACK_WITHOUT_EVIDENCE=${this.allowFallbackWithoutEvidence}`
+      `ALLOW_FALLBACK_WITHOUT_EVIDENCE=${this.allowFallbackWithoutEvidence} ` +
+      `MAX_TOKENS_NO_RAG=${this.maxTokensNoRag} MAX_TOKENS_RAG=${this.maxTokensRag}`
     );
   }
 
@@ -720,7 +776,11 @@ class MetricRAGChatService {
         `Answer in ${langStr}:`,
       ].filter(Boolean).join('\n');
 
-      const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm, { temperature: 0.2 });
+      const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm, {
+        temperature: 0.2,
+        max_completion_tokens: this.maxTokensNoRag, // ✅ curto
+      });
+
       if (!rawAnswer) {
         return this.answerLanguage === 'pt'
           ? 'Não foi possível obter uma resposta da LLM no momento.'
@@ -834,7 +894,7 @@ class MetricRAGChatService {
     // ------------------------------------------------------------
     // Prompt final RAG (short + strict-to-context)
     // ------------------------------------------------------------
-    const contract = buildShortAnswerContract(this.answerLanguage, { strictToContext: true });
+    const contract = buildRagAnswerContract(this.answerLanguage, { strictToContext: true });
 
     const strictNote = (!hasEvidence)
       ? (this.answerLanguage === 'pt'
@@ -857,7 +917,11 @@ class MetricRAGChatService {
       `Answer in ${langStr}:`,
     ].filter(Boolean).join('\n');
 
-    const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm, { temperature: 0.2 });
+    const rawAnswer = await generateWithLLM(systemPrompt, userPrompt, algorithm, {
+      temperature: 0.2,
+      max_completion_tokens: this.maxTokensRag, // ✅ maior p/ RAG ser mais informativo
+    });
+
     if (!rawAnswer) {
       return this.answerLanguage === 'pt'
         ? 'Não foi possível obter uma resposta da LLM no momento.'
@@ -869,7 +933,6 @@ class MetricRAGChatService {
 
     // ------------------------------------------------------------
     // ✅ Qualidade: se RAG vier “no info” / fraco, cai para fallback NO-RAG curto
-    // (assim o RAG nunca fica pior do que o no-rag quando o contexto é ruim)
     // ------------------------------------------------------------
     const ragLooksBad =
       !shortRag ||
@@ -890,7 +953,6 @@ class MetricRAGChatService {
           ? 'Nota: não encontrei base suficiente no contexto recuperado. Responda com base em conhecimento geral, deixando isso explícito na primeira frase.'
           : 'Note: I did not find enough basis in the retrieved context. Answer using general knowledge, making that explicit in the first sentence.'),
         '',
-        // usa a pergunta ORIGINAL para o modelo (melhor fluência), mas mantém também EN
         `Question: ${qOriginal}`,
         '',
         `Answer in ${langStr}:`,
@@ -900,7 +962,10 @@ class MetricRAGChatService {
         loadSystemPromptSync(this.answerLanguage, false),
         fallbackPrompt,
         algorithm,
-        { temperature: 0.2 }
+        {
+          temperature: 0.2,
+          max_completion_tokens: this.maxTokensNoRag,
+        }
       );
 
       if (fbRaw && fbRaw.trim()) {
